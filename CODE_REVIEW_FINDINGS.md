@@ -306,6 +306,13 @@ if (!confirm("Are you sure you want to remove this team member?")) return;
 - ✅ Good: Proper form handling
 - ⚠️ Minor: Relies entirely on RLS (no explicit checks)
 
+### `src/pages/PrivacyPolicy.tsx`
+- 🔴 Security: Uses `dangerouslySetInnerHTML` to render HTML content
+- **Line 30**: Renders HTML from what appears to be Termly privacy policy content
+- **Issue**: If content is not properly sanitized or comes from an untrusted source, this could lead to XSS attacks
+- **Severity**: Medium (if content is static and trusted, risk is low; if dynamic, risk is high)
+- **Fix**: If content is static, consider using a markdown parser or React components. If dynamic, ensure proper sanitization with DOMPurify or similar.
+
 ### `src/pages/Login.tsx`
 - ✅ Good: Proper form validation
 - ✅ Good: Remember me functionality
@@ -355,9 +362,10 @@ if (!confirm("Are you sure you want to remove this team member?")) return;
 ## Notes
 
 - **SQL Injection**: Protected by Supabase query builder, but string interpolation in complex queries should be avoided
-- **XSS**: Protected by React's default escaping, but should verify no `dangerouslySetInnerHTML` usage
+- **XSS**: Protected by React's default escaping, but `dangerouslySetInnerHTML` is used in PrivacyPolicy.tsx - ensure content is trusted/static
 - **RLS**: Row Level Security is enabled in database, but client-side checks should still be added for defense in depth
 - **Authentication**: Supabase Auth is used, which is secure, but session management could be improved
+- **localStorage**: Used minimally (email remember me, session timeout) - acceptable usage, no sensitive data stored
 
 ---
 
