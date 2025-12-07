@@ -63,6 +63,18 @@ export function SalesDashboard() {
   useEffect(() => {
     if (!user || !sales) return undefined;
 
+    // Validate sales.id to prevent filter injection
+    if (typeof sales.id !== 'string' || sales.id.length === 0 || !/^[0-9a-f-]{36}$/i.test(sales.id)) {
+      console.error('[SalesDashboard] Invalid sales.id for subscription');
+      return undefined;
+    }
+
+    // Authorization check: Verify sales belongs to current user
+    if (sales.user_id !== user.id) {
+      console.error('[SalesDashboard] Authorization failed: Sales does not belong to current user');
+      return undefined;
+    }
+
     const channelName = `sales-deliveries-${sales.id}-${Date.now()}`;
     const channel = supabase
       .channel(channelName)

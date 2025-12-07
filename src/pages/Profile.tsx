@@ -35,6 +35,13 @@ export function Profile() {
   const loadProfileData = async () => {
     if (!user || !role) return;
 
+    // Authorization check: Verify user is authenticated
+    const { data: { user: currentUser } } = await supabase.auth.getUser();
+    if (!currentUser || currentUser.id !== user.id) {
+      console.error('[Profile] Authorization failed: User mismatch');
+      return;
+    }
+
     let tableName = '';
     if (role === 'dealer') tableName = 'dealers';
     else if (role === 'sales') tableName = 'sales';
@@ -42,13 +49,24 @@ export function Profile() {
 
     if (!tableName) return;
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from(tableName)
       .select('*')
       .eq('user_id', user.id)
       .maybeSingle();
 
-    if (data) {
+    if (error) {
+      console.error('[Profile] Error loading profile:', error);
+      return;
+    }
+
+    // Authorization check: Verify data belongs to current user
+    if (data && data.user_id !== user.id) {
+      console.error('[Profile] Authorization failed: Profile data does not belong to current user');
+      return;
+    }
+
+    if (data && data.user_id === user.id) {
       const defaultAddress: AddressFields = {
         street: data.default_pickup_street || '',
         city: data.default_pickup_city || '',

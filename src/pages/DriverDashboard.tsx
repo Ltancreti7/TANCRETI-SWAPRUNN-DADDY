@@ -340,6 +340,24 @@ export function DriverDashboard() {
 
   const loadRequestDeliveries = async (driverId: string) => {
     try {
+      // Authorization check: Verify driver belongs to current user
+      if (!user || !driver || driver.user_id !== user.id) {
+        console.error('[LoadRequests] Authorization failed: Driver does not belong to current user');
+        showToast('Unauthorized access', 'error');
+        setRequestDeliveries([]);
+        setLoadingRequests(false);
+        return;
+      }
+
+      // Authorization check: Verify driverId matches current driver
+      if (driverId !== driver.id) {
+        console.error('[LoadRequests] Authorization failed: driverId mismatch');
+        showToast('Unauthorized access', 'error');
+        setRequestDeliveries([]);
+        setLoadingRequests(false);
+        return;
+      }
+
       console.log('[LoadRequests] Loading request deliveries for driver:', driverId);
       setLoadingRequests(true);
 
@@ -369,19 +387,50 @@ export function DriverDashboard() {
       const dealerIds = dealershipIds.map(d => d.dealer_id);
       console.log('[LoadRequests] Fetching deliveries from dealerships:', dealerIds);
 
+      // Validate driverId to prevent injection
+      if (typeof driverId !== 'string' || driverId.length === 0 || !/^[0-9a-f-]{36}$/i.test(driverId)) {
+        console.error('[LoadRequests] Invalid driverId format');
+        setRequestDeliveries([]);
+        setLoadingRequests(false);
+        return;
+      }
+
       // Fetch two types of requests:
       // 1. General pending deliveries (no driver assigned, available to all)
       // 2. Deliveries specifically requested for this driver (pending_driver_acceptance)
-      const { data, error: deliveriesError } = await supabase
-        .from('deliveries')
-        .select(`
-          *,
-          dealer:dealers(*),
-          sales:sales!sales_id(name)
-        `)
-        .in('dealer_id', dealerIds)
-        .or(`and(driver_id.is.null,status.eq.pending),and(driver_id.eq.${driverId},status.eq.pending_driver_acceptance)`)
-        .order('created_at', { ascending: false });
+      // Use separate queries to avoid string interpolation in filter
+      const [pendingResult, specificRequestResult] = await Promise.all([
+        // General pending deliveries
+        supabase
+          .from('deliveries')
+          .select(`
+            *,
+            dealer:dealers(*),
+            sales:sales!sales_id(name)
+          `)
+          .in('dealer_id', dealerIds)
+          .is('driver_id', null)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false }),
+        // Specifically requested deliveries for this driver
+        supabase
+          .from('deliveries')
+          .select(`
+            *,
+            dealer:dealers(*),
+            sales:sales!sales_id(name)
+          `)
+          .in('dealer_id', dealerIds)
+          .eq('driver_id', driverId)
+          .eq('status', 'pending_driver_acceptance')
+          .order('created_at', { ascending: false })
+      ]);
+
+      const deliveriesError = pendingResult.error || specificRequestResult.error;
+      const allDeliveries = [
+        ...(pendingResult.data || []),
+        ...(specificRequestResult.data || [])
+      ];
 
       if (deliveriesError) {
         console.error('[LoadRequests] Error fetching deliveries:', deliveriesError);
@@ -394,9 +443,11 @@ export function DriverDashboard() {
         throw deliveriesError;
       }
 
-      console.log('[LoadRequests] Found', data?.length || 0, 'request deliveries');
-      if (data) {
-        setRequestDeliveries(data as DeliveryWithDealer[]);
+      console.log('[LoadRequests] Found', allDeliveries.length, 'request deliveries');
+      if (allDeliveries.length > 0) {
+        setRequestDeliveries(allDeliveries as DeliveryWithDealer[]);
+      } else {
+        setRequestDeliveries([]);
       }
     } catch (error) {
       console.error('[LoadRequests] Failed to load request deliveries:', error);
@@ -625,9 +676,16 @@ export function DriverDashboard() {
   };
 
   const handleAcceptDelivery = async (deliveryId: string) => {
-    if (!driver) {
-      console.error('[AcceptDelivery] No driver found');
+    if (!driver || !user) {
+      console.error('[AcceptDelivery] No driver or user found');
       showToast('Driver profile not found', 'error');
+      return;
+    }
+
+    // Validate deliveryId to prevent injection
+    if (!deliveryId || typeof deliveryId !== 'string' || deliveryId.length === 0) {
+      console.error('[AcceptDelivery] Invalid deliveryId');
+      showToast('Invalid delivery request', 'error');
       return;
     }
 
@@ -635,57 +693,26 @@ export function DriverDashboard() {
     console.log('[AcceptDelivery] Driver ID:', driver.id);
 
     try {
-      // Fetch delivery details first
-      console.log('[AcceptDelivery] Fetching delivery details...');
-      const { data: delivery, error: fetchError } = await supabase
+      // ATOMIC UPDATE: Try to accept the delivery atomically without pre-fetching
+      // This prevents race conditions by using database-level constraints
+      
+      // First, try to accept a specifically requested delivery (pending_driver_acceptance)
+      let updateResult = await supabase
         .from('deliveries')
-        .select('*, dealer:dealers(user_id), sales:sales!sales_id(user_id)')
+        .update({
+          status: 'accepted',
+          chat_activated_at: new Date().toISOString(),
+          accepted_at: new Date().toISOString()
+        })
         .eq('id', deliveryId)
-        .single();
+        .eq('driver_id', driver.id)
+        .eq('status', 'pending_driver_acceptance')
+        .select('id, dealer_id, sales_id, dealer:dealers(user_id), sales:sales!sales_id(user_id)');
 
-      if (fetchError) {
-        console.error('[AcceptDelivery] Error fetching delivery:', fetchError);
-        throw fetchError;
-      }
-
-      console.log('[AcceptDelivery] Delivery fetched:', delivery);
-
-      // Check if this is a specifically requested delivery (pending_driver_acceptance with driver_id already set)
-      const isSpecificallyRequested = delivery.status === 'pending_driver_acceptance' && delivery.driver_id === driver.id;
-
-      if (delivery.driver_id && !isSpecificallyRequested) {
-        console.warn('[AcceptDelivery] Delivery already has different driver_id:', delivery.driver_id);
-        showToast('This delivery has already been accepted by another driver', 'error');
-        await loadRequestDeliveries(driver.id);
-        return;
-      }
-
-      // Attempt to update the delivery
-      console.log('[AcceptDelivery] Updating delivery with:', {
-        driver_id: driver.id,
-        status: 'accepted',
-        chat_activated_at: new Date().toISOString(),
-        accepted_at: new Date().toISOString(),
-        isSpecificallyRequested
-      });
-
-      // Different query depending on whether it's a specific request or general pending
-      let updateResult;
-      if (isSpecificallyRequested) {
-        // For specifically requested deliveries, just update the status
-        updateResult = await supabase
-          .from('deliveries')
-          .update({
-            status: 'accepted',
-            chat_activated_at: new Date().toISOString(),
-            accepted_at: new Date().toISOString()
-          })
-          .eq('id', deliveryId)
-          .eq('driver_id', driver.id)
-          .eq('status', 'pending_driver_acceptance')
-          .select('id');
-      } else {
-        // For general pending deliveries, claim it by setting driver_id
+      let isSpecificallyRequested = false;
+      
+      // If that didn't work, try to claim a general pending delivery
+      if (!updateResult.data || updateResult.data.length === 0) {
         updateResult = await supabase
           .from('deliveries')
           .update({
@@ -697,12 +724,14 @@ export function DriverDashboard() {
           .eq('id', deliveryId)
           .is('driver_id', null)
           .eq('status', 'pending')
-          .select('id');
+          .select('id, dealer_id, sales_id, dealer:dealers(user_id), sales:sales!sales_id(user_id)');
+      } else {
+        isSpecificallyRequested = true;
       }
 
-      const { error, count, data: updateData } = updateResult;
+      const { error, data: updateData } = updateResult;
 
-      console.log('[AcceptDelivery] Update result:', { error, count, updateData });
+      console.log('[AcceptDelivery] Update result:', { error, updateData, isSpecificallyRequested });
 
       if (error) {
         console.error('[AcceptDelivery] Error updating delivery:', error);
@@ -715,37 +744,56 @@ export function DriverDashboard() {
         throw error;
       }
 
-      if (count === 0) {
+      // If no rows were updated, delivery was already accepted by someone else
+      if (!updateData || updateData.length === 0) {
         console.warn('[AcceptDelivery] Update affected 0 rows - delivery was already accepted');
         showToast('This delivery has already been accepted by another driver', 'error');
         await loadRequestDeliveries(driver.id);
         return;
       }
 
-      console.log('[AcceptDelivery] Delivery updated successfully, count:', count);
+      const delivery = updateData[0];
+      console.log('[AcceptDelivery] Delivery updated successfully');
+
+      // Fetch full delivery details for notifications (after successful atomic update)
+      const { data: fullDelivery, error: fetchError } = await supabase
+        .from('deliveries')
+        .select('*, dealer:dealers(user_id), sales:sales!sales_id(user_id)')
+        .eq('id', deliveryId)
+        .single();
+
+      if (fetchError) {
+        console.error('[AcceptDelivery] Error fetching delivery details:', fetchError);
+        // Continue anyway - the update succeeded
+      }
+
+      const deliveryDetails = fullDelivery || delivery;
 
       // Send welcome message
       console.log('[AcceptDelivery] Sending welcome message...');
       const welcomeMessage = `Chat activated! Driver ${driver.name} has accepted this delivery. You can now coordinate the pickup schedule and any other details.`;
-      const { error: messageError } = await supabase.from('messages').insert({
-        delivery_id: deliveryId,
-        sender_id: user!.id,
-        recipient_id: delivery?.sales?.user_id || delivery?.dealer?.user_id,
-        content: welcomeMessage,
-      });
+      const recipientId = deliveryDetails?.sales?.user_id || deliveryDetails?.dealer?.user_id;
+      if (recipientId) {
+        const { error: messageError } = await supabase.from('messages').insert({
+          delivery_id: deliveryId,
+          sender_id: user.id,
+          recipient_id: recipientId,
+          content: welcomeMessage,
+        });
 
-      if (messageError) {
-        console.error('[AcceptDelivery] Error sending message:', messageError);
-      } else {
-        console.log('[AcceptDelivery] Welcome message sent');
+        if (messageError) {
+          console.error('[AcceptDelivery] Error sending message:', messageError);
+        } else {
+          console.log('[AcceptDelivery] Welcome message sent');
+        }
       }
 
       // Send notifications
       console.log('[AcceptDelivery] Sending notifications...');
       const notifications = [];
-      if (delivery?.dealer?.user_id) {
+      if (deliveryDetails?.dealer?.user_id) {
         notifications.push({
-          user_id: delivery.dealer.user_id,
+          user_id: deliveryDetails.dealer.user_id,
           delivery_id: deliveryId,
           type: 'delivery_accepted',
           title: 'Delivery Accepted',
@@ -753,9 +801,9 @@ export function DriverDashboard() {
           read: false,
         });
       }
-      if (delivery?.sales?.user_id) {
+      if (deliveryDetails?.sales?.user_id && deliveryDetails.sales.user_id !== deliveryDetails?.dealer?.user_id) {
         notifications.push({
-          user_id: delivery.sales.user_id,
+          user_id: deliveryDetails.sales.user_id,
           delivery_id: deliveryId,
           type: 'delivery_accepted',
           title: 'Delivery Accepted',
@@ -781,20 +829,15 @@ export function DriverDashboard() {
         return filtered;
       });
 
-      // Add to upcoming deliveries
-      const acceptedDelivery = requestDeliveries.find(d => d.id === deliveryId);
-      if (acceptedDelivery) {
-        console.log('[AcceptDelivery] Adding to upcoming deliveries');
-        setUpcomingDeliveries(prev => [{
-          ...acceptedDelivery,
-          driver_id: driver.id,
-          status: 'accepted',
-          chat_activated_at: new Date().toISOString(),
-          accepted_at: new Date().toISOString()
-        }, ...prev]);
-      } else {
-        console.warn('[AcceptDelivery] Could not find accepted delivery in request list');
-      }
+      // Reload upcoming deliveries to ensure we have the latest data
+      // This handles cases where the delivery wasn't in requestDeliveries (e.g., from realtime update)
+      await loadUpcomingDeliveries(driver.id);
+      
+      // Also update local state optimistically if delivery is in requestDeliveries
+      setRequestDeliveries(prev => {
+        const filtered = prev.filter(d => d.id !== deliveryId);
+        return filtered;
+      });
 
       console.log('[AcceptDelivery] Accept process completed successfully');
       showToast('Delivery accepted successfully!', 'success');

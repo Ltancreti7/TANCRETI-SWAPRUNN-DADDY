@@ -37,19 +37,52 @@ export function Chat() {
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const loadDelivery = useCallback(async () => {
-    if (!deliveryId) return;
-    const { data } = await supabase
+    if (!deliveryId || !user) return;
+
+    // Validate deliveryId to prevent injection
+    if (typeof deliveryId !== 'string' || deliveryId.length === 0 || !/^[0-9a-f-]{36}$/i.test(deliveryId)) {
+      console.error('[Chat] Invalid deliveryId format');
+      showToast('Invalid delivery ID', 'error');
+      return;
+    }
+
+    const { data, error } = await supabase
       .from('deliveries')
-      .select('*, sales:sales!sales_id(*), driver:drivers(name)')
+      .select('*, sales:sales!sales_id(*), driver:drivers(name, user_id), dealer:dealers(user_id)')
       .eq('id', deliveryId)
       .maybeSingle();
 
-    if (data) {
-      setDelivery(data);
-      if (data.sales) setSalesPerson(data.sales as unknown as Sales);
-      if (data.driver) setDriverName((data.driver as { name: string }).name);
+    if (error) {
+      console.error('[Chat] Error loading delivery:', error);
+      showToast('Failed to load delivery', 'error');
+      return;
     }
-  }, [deliveryId]);
+
+    if (!data) {
+      showToast('Delivery not found', 'error');
+      return;
+    }
+
+    // Authorization check: Verify user has access to this delivery
+    const isAuthorized = 
+      // User is the driver assigned to this delivery
+      (data.driver_id && data.driver?.user_id === user.id) ||
+      // User is the sales person who created this delivery
+      (data.sales_id && data.sales?.user_id === user.id) ||
+      // User is the dealer who owns this delivery
+      (data.dealer_id && data.dealer?.user_id === user.id);
+
+    if (!isAuthorized) {
+      console.error('[Chat] Authorization failed: User does not have access to this delivery');
+      showToast('You do not have access to this delivery', 'error');
+      navigate(-1);
+      return;
+    }
+
+    setDelivery(data);
+    if (data.sales) setSalesPerson(data.sales as unknown as Sales);
+    if (data.driver) setDriverName((data.driver as { name: string }).name);
+  }, [deliveryId, user, showToast, navigate]);
 
   const loadMessages = useCallback(async () => {
     if (!deliveryId) return;
@@ -63,7 +96,13 @@ export function Chat() {
   }, [deliveryId]);
 
   const subscribeToMessages = useCallback(() => {
-    if (!deliveryId) {
+    if (!deliveryId || !user) {
+      return () => {};
+    }
+
+    // Validate deliveryId to prevent filter injection
+    if (typeof deliveryId !== 'string' || deliveryId.length === 0 || !/^[0-9a-f-]{36}$/i.test(deliveryId)) {
+      console.error('[Chat] Invalid deliveryId for subscription');
       return () => {};
     }
 
