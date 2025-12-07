@@ -21,7 +21,7 @@ export function useUnreadMessages(deliveryId: string, userId: string | undefined
     loadUnreadCount();
 
     const channel = supabase
-      .channel(`unread-${deliveryId}-${userId}`)
+      .channel(`unread-${deliveryId}-${userId}-${Date.now()}`)
       .on(
         'postgres_changes',
         {
@@ -51,8 +51,15 @@ export function useUnreadMessages(deliveryId: string, userId: string | undefined
       )
       .subscribe();
 
+    // Cleanup function - ensures channel is always removed
     return () => {
-      supabase.removeChannel(channel);
+      try {
+        if (channel) {
+          supabase.removeChannel(channel);
+        }
+      } catch (error) {
+        console.error('[useUnreadMessages] Error removing channel:', error);
+      }
     };
   }, [deliveryId, userId]);
 

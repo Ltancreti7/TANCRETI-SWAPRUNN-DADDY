@@ -63,6 +63,10 @@ export function Chat() {
   }, [deliveryId]);
 
   const subscribeToMessages = useCallback(() => {
+    if (!deliveryId) {
+      return () => {};
+    }
+
     try {
       const channel = supabase
         .channel(`delivery-${deliveryId}`)
@@ -104,8 +108,15 @@ export function Chat() {
           }
         });
 
+      // Cleanup function - ensures channel is always removed
       return () => {
-        supabase.removeChannel(channel);
+        try {
+          if (channel) {
+            supabase.removeChannel(channel);
+          }
+        } catch (error) {
+          console.error('Error removing channel:', error);
+        }
       };
     } catch (error) {
       console.error('Failed to subscribe to messages:', error);
@@ -140,25 +151,38 @@ export function Chat() {
         });
     }
 
-    return cleanup;
+    // Cleanup function - ensures subscription and typing timeout are cleaned up
+    return () => {
+      if (cleanup) {
+        cleanup();
+      }
+      // Clear typing timeout on unmount
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+    };
   }, [deliveryId, loadDelivery, loadMessages, subscribeToMessages, user?.id]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  const handleTyping = () => {
+  const handleTyping = useCallback(() => {
+    if (!deliveryId || !user?.id) return;
+    
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
 
+    // Use the same channel name as the subscription for presence tracking
     const channel = supabase.channel(`delivery-${deliveryId}`);
-    channel.track({ typing: true, user_id: user?.id });
+    channel.track({ typing: true, user_id: user.id });
 
     typingTimeoutRef.current = setTimeout(() => {
-      channel.track({ typing: false, user_id: user?.id });
+      channel.track({ typing: false, user_id: user.id });
     }, 2000);
-  };
+  }, [deliveryId, user?.id]);
 
   const handleSendMessage = async (event: React.FormEvent) => {
     event.preventDefault();

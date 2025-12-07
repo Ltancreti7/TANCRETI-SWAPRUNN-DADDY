@@ -252,14 +252,25 @@ export function DriverDashboard() {
 
     channelRef.current = channel;
 
+    // Cleanup function - ensures channel is always removed
     return () => {
       console.log('[Realtime] ========== CLEANUP ==========');
       console.log('[Realtime] Cleaning up subscription');
+      stopPolling();
+      
+      // Use channel from closure to ensure we always have the reference
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch (error) {
+          console.error('[Realtime] Error removing channel:', error);
+        }
+      }
+      
+      // Also clean up ref
       if (channelRef.current) {
-        supabase.removeChannel(channelRef.current);
         channelRef.current = null;
       }
-      stopPolling();
     };
   }, [user, driver?.id]);
 

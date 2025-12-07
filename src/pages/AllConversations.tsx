@@ -23,10 +23,11 @@ export function AllConversations() {
 
   useEffect(() => {
     if (!user) return;
+
     loadConversations();
 
     const channel = supabase
-      .channel('all-messages')
+      .channel(`all-messages-${user.id}-${Date.now()}`)
       .on(
         'postgres_changes',
         {
@@ -40,8 +41,15 @@ export function AllConversations() {
       )
       .subscribe();
 
+    // Cleanup function - ensures channel is always removed
     return () => {
-      supabase.removeChannel(channel);
+      try {
+        if (channel) {
+          supabase.removeChannel(channel);
+        }
+      } catch (error) {
+        console.error('[AllConversations] Error removing channel:', error);
+      }
     };
   }, [user]);
 

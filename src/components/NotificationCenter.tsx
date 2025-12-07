@@ -54,7 +54,7 @@ export function NotificationCenter() {
     if (!user) return undefined;
 
     const channel = supabase
-      .channel("notifications")
+      .channel(`notifications-${user.id}-${Date.now()}`)
       .on(
         "postgres_changes",
         {
@@ -81,8 +81,15 @@ export function NotificationCenter() {
       )
       .subscribe();
 
+    // Cleanup function - ensures channel is always removed
     return () => {
-      supabase.removeChannel(channel);
+      try {
+        if (channel) {
+          supabase.removeChannel(channel);
+        }
+      } catch (error) {
+        console.error('[NotificationCenter] Error removing channel:', error);
+      }
     };
   }, [user, loadNotifications]);
 
@@ -91,8 +98,14 @@ export function NotificationCenter() {
 
     loadNotifications();
     const cleanup = subscribeToNotifications();
-    return cleanup;
-  }, [user, loadNotifications, subscribeToNotifications]);
+    
+    // Cleanup function ensures both subscription and any pending operations are cleaned up
+    return () => {
+      if (cleanup) {
+        cleanup();
+      }
+    };
+  }, [user, subscribeToNotifications]);
 
   const markAsRead = async (notificationId: string) => {
     await supabase

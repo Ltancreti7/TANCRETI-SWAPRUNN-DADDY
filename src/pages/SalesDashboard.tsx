@@ -102,9 +102,16 @@ export function SalesDashboard() {
       )
       .subscribe();
 
+    // Cleanup function - ensures channel is always removed
     return () => {
       console.log('[SalesDashboard] Cleaning up realtime subscription');
-      supabase.removeChannel(channel);
+      try {
+        if (channel) {
+          supabase.removeChannel(channel);
+        }
+      } catch (error) {
+        console.error('[SalesDashboard] Error removing channel:', error);
+      }
     };
   }, [user, sales?.id]);
 
